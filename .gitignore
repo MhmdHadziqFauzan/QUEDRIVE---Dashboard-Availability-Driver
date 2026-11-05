@@ -1,0 +1,12 @@
+# koneksi & password database - jangan pernah diunggah
+.env
+.env.*
+
+# cache API & hasil cek koneksi (berisi data asli)
+storage/
+
+# file simulasi berisi snapshot data asli (nama driver, nopol, SJ)
+simulasi/
+
+# file uji sementara
+public/_test.html
