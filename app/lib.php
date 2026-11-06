@@ -26,6 +26,13 @@ const TIPE_ABSEN = ['X' => 'Pool', 'OR' => 'On Road', 'A' => 'Tidak Hadir', 'I' 
 // shipment_status di trx_gps_tracking -> label Last Shipment (cancel diabaikan)
 const SHIP_LABEL = ['onprogress' => 'On Progress', 'ready' => 'Ready', 'closed' => 'Closed', 'forceclosed' => 'Closed'];
 
+// Akses data (hasil meeting 05-Nov-2026): driver project Exim Trailer, LOBP, ESA; SPK/SPO POOL NAGRAK TRAILER.
+// Driver Exim Trailer yang membawa shipment POOL CILEGON TRAILER ikut karena project-nya Exim Trailler.
+// ESA: shipment selalu dengan pihak ketiga, jadi wajar absensinya selalu OR dan tidak ada di trx_gps_tracking.
+// Nanti diambil dari role user (menu hak akses), bukan konstanta.
+const AKSES_PROJECT = ['Exim Trailler', 'LOBP', 'ESA'];   // mst_driver.project_name (ejaan sesuai database)
+const AKSES_POOL = 'POOL NAGRAK TRAILER';     // trx_shipment_preparation.ownership_shipment
+
 date_default_timezone_set('Asia/Jakarta');
 
 // isi .env (KEY=VALUE, baris "#" = komentar); variabel environment server tetap didahulukan
@@ -198,20 +205,27 @@ function build_drivers(string $tanggal): array {
         $absen = array_map(fn($a) => ['initial' => null, 'updated_at' => null] + $a,
                            fetch_rows('driver_absen', ['tanggal' => date('Y-m-d', strtotime('-1 day'))]));
     }
+    $absen = array_column($absen, null, 'driver_id');
     $rows = ship_rows($tanggal);
     $ship = last_shipments($rows);
     $unload = last_unloadings($rows, $tanggal);
     $owner = nopol_owner($rows);
     $aktif = driver_status();
     $out = [];
-    foreach ($absen as $a) {
+    // patokan daftar driver = mst_driver (project yang boleh diakses, DM/DOS), aktif MAUPUN nonaktif (Master Driver menampilkan semua);
+    // List Driver / antrian di dashboard hanya memakai yang 'aktif' = true. Absen hari ini ditempelkan,
+    // driver yang belum punya baris absen tampil Belum Absen. Nama dari mst_driver.
+    foreach (fetch_rows('mst_driver', ['projects' => implode(',', AKSES_PROJECT)]) as $m) {
+        $a = ($absen[$m['dm_number']] ?? [])
+           + ['driver_id' => $m['dm_number'], 'initial' => null, 'updated_at' => null, 'status_klinik' => null];
+        $a['driver_name'] = $m['name'];
         $ini = strtoupper(trim($a['initial'] ?? ''));
         $s = $ship[$a['driver_id']] ?? null;
         $last = $s['status'] ?? null;
         $jalan = in_array($last, ['On Progress', 'Ready'], true) && ($s['nopol'] ?? '') !== '';
         $pemegang = $jalan ? ($owner[$s['nopol']] ?? []) : [];
         $out[] = [
-            'id' => $a['driver_id'], 'nama' => $a['driver_name'], 'initial' => $ini !== '' ? $ini : null,
+            'id' => $a['driver_id'], 'nama' => $a['driver_name'], 'project' => $m['project_name'], 'initial' => $ini !== '' ? $ini : null,
             'jam' => $ini !== '' && $a['updated_at'] ? substr($a['updated_at'], 11, 5) : null,
             'tipe_absen' => TIPE_ABSEN[$ini] ?? 'Belum Absen',
             'last_shipment' => $last, 'shipment_number' => $s['shipment_number'] ?? null, 'tender_date' => iso_min($s['tender_date'] ?? null),
@@ -223,7 +237,9 @@ function build_drivers(string $tanggal): array {
             // masih dipegang driver ini (shipment terbaru dengan nopol tsb milik driver ini); selain itu null
             'tracking_nopol' => $jalan && in_array($a['driver_id'], $pemegang, true) ? $s['nopol'] : null,
             'nopol_driver_lain' => $jalan && $pemegang && !in_array($a['driver_id'], $pemegang, true) ? implode(' / ', $pemegang) : null,
-            'aktif' => $aktif === null ? null : ($aktif[$a['driver_id']] ?? null),   // null = tidak ada di DB2 / DB2 gagal
+            // aktif dari DB2 (is_active); null = tidak ada di DB2 (dianggap tidak aktif untuk antrian).
+            // Bila DB2 gagal dibaca: cadangan mst_driver.status agar antrian tetap jalan
+            'aktif' => $aktif === null ? $m['status'] === 'active' : ($aktif[$a['driver_id']] ?? null),
             // Status Klinik dari baris absen tanggal ini (FIT / UNFIT); null = belum ada data klinik
             'klinik' => ($k = strtoupper(trim($a['status_klinik'] ?? ''))) !== '' ? $k : null,
             // AVA: hadir (X) dan Last Shipment Closed, atau hadir (X) tanpa shipment 7 hari terakhir
@@ -275,7 +291,7 @@ function truck_group(?string $tp): string {
 function build_spk_spo(string $tanggal): array {
     $sejak = date('Y-m-d 00:00:00', strtotime("$tanggal -" . SHIP_LOOKBACK_DAYS . ' days'));
     $ship = [];
-    foreach (fetch_rows('spk_spo', ['sejak' => $sejak, 'sejak2' => "$tanggal 00:00:00"]) as $r) {
+    foreach (fetch_rows('spk_spo', ['pool' => AKSES_POOL, 'sejak' => $sejak, 'sejak2' => "$tanggal 00:00:00"]) as $r) {
         $tipe = strtoupper(trim($r['shipment_type'] ?? ''));
         // seperti aturan DOTS: shipment tanpa tanggal tender dan yang dibatalkan tidak dihitung
         if (!in_array($tipe, ['SPK', 'SPO'], true) || !$r['tender_date'] || $r['cancel_date'] || stripos($r['status'] ?? '', 'cancel shipment approved') !== false) continue;
@@ -294,9 +310,12 @@ function build_spk_spo(string $tanggal): array {
     return $out;
 }
 
-// nama depo untuk dropdown Depo di List Antrian
+// nama depo untuk dropdown Depo di List Antrian; awalan project tidak ditampilkan (PL/EXIM.DEPO-BCC -> DEPO-BCC)
+function depo_name(string $geo): string {
+    return preg_replace('#^PL/[^.]*\.#', '', trim($geo));
+}
 function build_depo(): array {
-    return array_values(array_unique(array_map(fn($r) => trim($r['geo_code']), fetch_rows('depo'))));
+    return array_values(array_unique(array_map(fn($r) => depo_name($r['geo_code']), fetch_rows('depo'))));
 }
 
 // SJ belum kembali; pool diambil dari Master Unit lewat nopol (power_unit), karena tabel SJ tidak punya kolom pool

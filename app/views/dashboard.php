@@ -491,7 +491,7 @@ header{border-left:4px solid var(--accent)}
       <section class="view" id="v-masterDriver">
         <div class="page-h"><h2>Master Data Driver</h2><p id="cntMD">Memuat data driver…</p></div>
         <div class="panel"><div class="toolbar"><input type="search" id="searchMD" placeholder="Cari ID atau Nama Driver..." aria-label="Cari driver di Master Driver"><select id="fltStatusDriver" aria-label="Filter status driver"><option value="all">Status Driver: Semua</option><option value="Aktif">Aktif</option><option value="Nonaktif">Nonaktif</option></select><div class="df-wrap md-df"><button class="btn" id="btnMDF" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="mdfPanel"><svg class="ic" viewBox="0 0 24 24"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>Filter<span class="df-n" id="mdfCount" hidden>0</span></button><div class="df-panel" id="mdfPanel" role="dialog" aria-label="Filter Master Driver" hidden><div class="df-h"><b>Filter Master Driver</b><button class="modal-x" id="mdfClose" type="button" aria-label="Tutup">&times;</button></div><div id="mdfBody"></div><div class="df-act"><button class="btn" id="mdfReset" type="button">Reset</button><button class="btn primary" id="mdfDone" type="button">Selesai</button></div></div></div></div>
-        <div class="tbl-wrap" style="max-height:72vh"><table class="t"><thead><tr><th>No</th><th class="l">ID Driver</th><th class="l">Nama Driver</th><th>Status Driver</th><th>Status Klinik</th><th>Last Shipment Status</th><th>Last Unloading</th><th>Last Location</th></tr></thead><tbody id="tbMD"></tbody></table></div></div>
+        <div class="tbl-wrap" style="max-height:72vh"><table class="t"><thead><tr><th>No</th><th class="l">ID Driver</th><th class="l">Nama Driver</th><th>Project</th><th>Status Driver</th><th>Status Klinik</th><th>Last Shipment Status</th><th>Last Unloading</th><th>Last Location</th></tr></thead><tbody id="tbMD"></tbody></table></div></div>
       </section>
 
       <!-- MASTER UNIT -->
@@ -584,7 +584,7 @@ const COLS = {
   aktif: ['TANGGAL AKTIF', 'START AKTIF', 'TGL AKTIF', 'MULAI AKTIF'],
   nonaktif: ['TANGGAL NONAKTIF', 'TANGGAL NON AKTIF', 'NONAKTIF', 'TGL NONAKTIF', 'END AKTIF']
 };
-const DEFAULTS = { logo: 'A', cutoffOn: false, cutoff: '18:00', sjPool: 'POOL NAGRAK TRAILER', agingSrc: 'tender', agingRed: 3, orRollover: 'keep' };
+const DEFAULTS = { logo: 'A', cutoffOn: false, cutoff: '18:00', sjPool: 'POOL NAGRAK TRAILER', agingSrc: 'tender', agingRed: 3 };
 let toastTimer = null;
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 3600); }
 function debounce(fn, ms) { let t = null; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
@@ -753,9 +753,12 @@ async function loadApi() {
   renderListDriver(); renderQueueSafe(); updateDashboard(); renderMasterDriver(); renderMasterUnit(); renderShareBar(); refreshOpenViews();
   autoFillNopol();
 }
-// List Driver hari ini; Tipe Absensi, Last Shipment & AVA dihitung di backend
-function driverListToday() {
-  return API.drivers.map(x => ({ id_driver: x.id, nama: x.nama, jam_absen: x.jam, status_lokasi: x.status, tipe_absen: x.tipe_absen,
+// List Driver hari ini: HANYA driver aktif (DMS is_active = TRUE) -> driver nonaktif tidak bisa masuk antrian.
+// Tipe Absensi, Last Shipment & AVA dihitung di backend
+function driverListToday() { return driverListAll().filter(d => d.aktif === true); }
+// semua driver (aktif & nonaktif): hanya untuk Master Driver
+function driverListAll() {
+  return API.drivers.map(x => ({ id_driver: x.id, nama: x.nama, project: x.project, jam_absen: x.jam, status_lokasi: x.status, tipe_absen: x.tipe_absen,
     last_loc: x.last_shipment, shipment_number: x.shipment_number, tender_date: x.tender_date, closed_date: x.closed_date, nopol: x.nopol, tipe_unit: x.tipe_unit, aktif: x.aktif,
     last_unloading: x.last_unloading, last_unloading_at: x.last_unloading_at, tracking_nopol: x.tracking_nopol, nopol_driver_lain: x.nopol_driver_lain }));
 }
@@ -920,7 +923,8 @@ function renderListDriver() {
 // filter List Driver (pop up): pilihan kosong dalam satu field = semua
 const tipeDriver = id => { const m = /^([A-Z]+)-/.exec(String(id).toUpperCase()); return m ? m[1] : ''; };   // DM-00045 -> DM
 const DF_FIELDS = [
-  ['drv', 'Tipe Driver', [['DM', 'DM'], ['CD', 'CD'], ['DOS', 'DOS']], d => tipeDriver(d.id_driver)],
+  ['proj', 'Project', [['Exim Trailler', 'Exim Trailer'], ['LOBP', 'LOBP'], ['ESA', 'ESA']], d => d.project],   // nilai = mst_driver.project_name
+  ['drv', 'Tipe Driver', [['DM', 'DM'], ['DOS', 'DOS']], d => tipeDriver(d.id_driver)],
   ['tipe', 'Tipe Absensi', [['Pool', 'Pool'], ['On Road', 'On Road'], ['Izin', 'Izin'], ['Sakit', 'Sakit'], ['Tidak Hadir', 'Tidak Hadir'], ['Belum Absen', 'Belum']], d => d.tipe_absen],
   ['ship', 'Last Shipment', [['Ready', 'Ready'], ['On Progress', 'On Progress'], ['Closed', 'Closed'], ['-', 'Tidak ada']], d => d.last_loc || '-']
 ];
@@ -960,6 +964,13 @@ function orderOf(a) {
   return a.seq && Date.parse(d.tender_date) < a.seq - 60000 ? null : d;
 }
 const orderCount = (a, day) => API.ok ? (orderOf(a) ? 1 : 0) : shipCount(a.id, day);
+// sudah dipairing sejak masuk antrian (untuk ganti tanggal): SUDAH, atau shipment terakhirnya ditender setelah masuk
+// antrian walaupun sudah Closed
+function pairedSince(a) {
+  if (orderOf(a)) return true;
+  const d = drvApi(a.id);
+  return !!(d && d.tender_date && a.seq && Date.parse(d.tender_date) >= a.seq - 60000);
+}
 function orCell(a, day) {
   if (API.ok) {
     const o = orderOf(a);
@@ -1030,11 +1041,13 @@ function renderListAntrian() {
   updateDashboard();
 }
 // pilihan Depo di List Antrian: db_utilisasi / mst_depo ; geo_code (dimuat bersama data driver)
+// awalan project tidak ditampilkan: PL/EXIM.DEPO-BCC -> DEPO-BCC (juga untuk isian lama yang masih tersimpan lengkap)
+const depoName = v => String(v || '').replace(/^PL\/[^.]*\./, '');
 function depoSelect(d) {
-  const list = API.depo;
-  const opts = d.depo && !list.includes(d.depo) ? [d.depo, ...list] : list;   // isian lama tetap tampil
+  const list = API.depo, cur = depoName(d.depo);
+  const opts = cur && !list.includes(cur) ? [cur, ...list] : list;   // isian lama tetap tampil
   return `<select class="cell-in" data-id="${esc(d.id)}" data-f="depo" aria-label="Depo"><option value="">Pilih depo...</option>` +
-    opts.map(v => `<option value="${esc(v)}"${v === d.depo ? ' selected' : ''}>${esc(v)}</option>`).join('') + '</select>';
+    opts.map(v => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(v)}</option>`).join('') + '</select>';
 }
 async function addToAntrian(id) {
   const d = driverListToday().find(x => x.id_driver === id);
@@ -1105,7 +1118,8 @@ function updateDashboard() {
    GANTI TANGGAL
    ===================================================================== */
 async function maybeRollover() {
-  if (!DBREADY || !S.loaded.config || !CAN_WRITE) return;
+  // butuh data Last Shipment dari database untuk tahu siapa yang sudah dipairing; dicoba lagi tiap 15 detik (tickClock)
+  if (!DBREADY || !S.loaded.config || !CAN_WRITE || !API.ok) return;
   const t = todaySerial(), last = S.config.lastDay;
   if (last === t) return;
   if (last == null) { await dbWrite(() => upsert('app/config', { lastDay: t })); return; }
@@ -1114,14 +1128,26 @@ async function maybeRollover() {
   const lastNow = cur.exists ? cur.data().lastDay : null;
   if (lastNow == null || lastNow === t) return;
   await saveHistory(lastNow);
-  let removed = 0;
-  if (S.settings.orRollover === 'remove') {
-    const upd = {};
-    antrian().forEach(a => { if (orderCount(a, lastNow) > 0) { upd[keyOf(a.id)] = null; removed++; } });
-    if (removed) await dbWrite(() => upsert('app/queue', { items: upd }));
-  }
+  // antrian tidak dikosongkan; driver yang sudah dipairing keluar sendiri saat absen di hari baru (lihat returnPaired)
   await dbWrite(() => upsert('app/config', { lastDay: t }));
-  toast(removed ? `Ganti tanggal: ${removed} driver OR dikeluarkan dari antrian, sisanya tetap.` : 'Ganti tanggal: antrian dipertahankan, status shipment dihitung ulang untuk hari ini.');
+  toast('Ganti tanggal: History tersimpan. Driver yang sudah dipairing (SUDAH) kembali ke List Driver setelah absen hari ini.');
+}
+// Status Order SUDAH + ganti hari + sudah absen hari ini -> keluar dari antrian, kembali ke List Driver.
+// Syarat: dipairing sejak masuk antrian (pairedSince), masuk antrian sebelum hari ini, dan tipe absen hari ini bukan Belum Absen.
+// Yang belum dipairing atau belum absen tetap di antrian. Dicek tiap 15 detik (tickClock).
+let returnBusy = false;
+async function returnPaired() {
+  if (returnBusy || !DBREADY || !S.loaded.config || !CAN_WRITE || !API.ok || S.config.lastDay !== todaySerial()) return;
+  const awalHari = new Date().setHours(0, 0, 0, 0), upd = {};
+  antrian().forEach(a => {
+    const d = drvApi(a.id);
+    if (a.seq && a.seq < awalHari && d && d.tipe_absen && d.tipe_absen !== 'Belum Absen' && pairedSince(a)) upd[keyOf(a.id)] = null;
+  });
+  const n = Object.keys(upd).length;
+  if (!n) return;
+  returnBusy = true;
+  try { await dbWrite(() => upsert('app/queue', { items: upd })); toast(`${n} driver yang sudah dipairing dan sudah absen hari ini kembali ke List Driver.`); }
+  finally { returnBusy = false; }
 }
 
 /* =====================================================================
@@ -1133,7 +1159,7 @@ function buildSnapshot(day) {
   return {
     date: dateKey(day), savedAt: Date.now(),
     drivers: driverListToday().filter(d => !inQ.has(d.id_driver)).map(d => [d.id_driver, d.nama, d.jam_absen || '', d.status_lokasi]),   // data database saat disimpan
-    antrian: q.map(a => [a.id, a.nama, a.jam_absen ? absenStr(a) : '', a.depo || '', a.nopol_unit || '', a.type_unit || '', a.keterangan || '', antriStr(a), orderCount(a, day), ...sjOf(a.id), p2hOf(a.nopol_unit), klinikOf(a.id)])
+    antrian: q.map(a => [a.id, a.nama, a.jam_absen ? absenStr(a) : '', depoName(a.depo), a.nopol_unit || '', a.type_unit || '', a.keterangan || '', antriStr(a), orderCount(a, day), ...sjOf(a.id), p2hOf(a.nopol_unit), klinikOf(a.id)])
   };
 }
 async function saveHistory(day) {
@@ -1167,7 +1193,7 @@ async function renderHistory() {
   const d = await histData();
   const saved = H.sel === tk ? 'Data hari ini (langsung dari Dashboard Antrian)' : (d.missing ? 'Belum ada data tersimpan untuk tanggal ini' : 'Tersimpan terakhir ' + fmtTs(d.savedAt));
   const dr = d.drivers.map((r, i) => `<tr><td class="num">${i + 1}</td><td class="l">${esc(r[0])}</td><td class="l">${esc(r[1])}</td><td class="mono">${r[3] === 'AVA' ? esc(r[2]) : '-'}</td><td><span class="pill ${r[3] === 'AVA' ? 'c-OR' : 'c-O'}">${esc(r[3])}</span></td></tr>`).join('') || `<tr><td colspan="5" class="empty-row">Tidak ada data</td></tr>`;
-  const an = d.antrian.map((r, i) => `<tr><td class="num">${i + 1}</td><td class="l">${esc(r[0])}</td><td class="l">${esc(r[1])}</td><td class="l">${esc(r[4]) || '-'}</td><td class="l">${esc(r[5]) || '-'}</td><td class="mono wrap dt">${dtHtml(r[2])}</td><td class="mono wrap dt">${dtHtml(r[7])}</td><td class="wrap">${r[8] > 0 ? `<span class="pill c-OR">SUDAH</span><div class="note">${r[8]} shipment</div>` : '<span class="pill c-O">BELUM</span>'}</td><td class="wrap">${r[12] ? `<span class="pill ${stClass(r[12])}">${esc(r[12])}</span>` : '<span class="note">-</span>'}</td><td class="wrap">${r[11] ? `<span class="pill ${p2hClass(r[11])}">${esc(r[11])}</span>` : (r[4] ? '<span class="note">-</span>' : '')}</td><td class="wrap">${r[9] == null ? '<span class="note">-</span>' : `<span class="age${r[9] >= S.settings.agingRed ? ' red' : ''}">${r[9]}</span>${r[10] > 1 ? `<div class="note">${r[10]} SJ</div>` : ''}`}</td><td class="l">${esc(r[3]) || '-'}</td><td class="l">${esc(r[6]) || '-'}</td></tr>`).join('') || `<tr><td colspan="13" class="empty-row">Tidak ada driver di antrian pada tanggal ini</td></tr>`;
+  const an = d.antrian.map((r, i) => `<tr><td class="num">${i + 1}</td><td class="l">${esc(r[0])}</td><td class="l">${esc(r[1])}</td><td class="l">${esc(r[4]) || '-'}</td><td class="l">${esc(r[5]) || '-'}</td><td class="mono wrap dt">${dtHtml(r[2])}</td><td class="mono wrap dt">${dtHtml(r[7])}</td><td class="wrap">${r[8] > 0 ? `<span class="pill c-OR">SUDAH</span><div class="note">${r[8]} shipment</div>` : '<span class="pill c-O">BELUM</span>'}</td><td class="wrap">${r[12] ? `<span class="pill ${stClass(r[12])}">${esc(r[12])}</span>` : '<span class="note">-</span>'}</td><td class="wrap">${r[11] ? `<span class="pill ${p2hClass(r[11])}">${esc(r[11])}</span>` : (r[4] ? '<span class="note">-</span>' : '')}</td><td class="wrap">${r[9] == null ? '<span class="note">-</span>' : `<span class="age${r[9] >= S.settings.agingRed ? ' red' : ''}">${r[9]}</span>${r[10] > 1 ? `<div class="note">${r[10]} SJ</div>` : ''}`}</td><td class="l">${esc(depoName(r[3])) || '-'}</td><td class="l">${esc(r[6]) || '-'}</td></tr>`).join('') || `<tr><td colspan="13" class="empty-row">Tidak ada driver di antrian pada tanggal ini</td></tr>`;
   el.innerHTML = `<div class="page-h"><h2>History Antrian</h2><p>List Driver &amp; List Antrian beserta remarks per tanggal.</p></div>
   <div class="hist-bar"><label>Tanggal <select id="histSel">${dates.map(x => `<option value="${x}"${x === H.sel ? ' selected' : ''}>${esc(fmtSerial(serialOfKey(x)))}${x === tk ? ' (hari ini)' : ''}</option>`).join('')}</select></label>
     <span class="note">${esc(saved)}</span>
@@ -1185,7 +1211,7 @@ function downloadHistory(d) {
   const w1 = XLSX.utils.aoa_to_sheet([['No', 'ID Driver', 'Nama', 'Jam Absen', 'Status Driver'], ...d.drivers.map((r, i) => [i + 1, r[0], r[1], r[2], r[3]])]);
   w1['!cols'] = [6, 14, 30, 11, 14].map(w => ({ wch: w }));
   const w2 = XLSX.utils.aoa_to_sheet([['No', 'ID Driver', 'Nama', 'Nopol Unit', 'Tipe Unit', 'Absen MTA', 'Antri', 'Status Order', 'Jumlah Shipment', 'Status Klinik', 'Status P2H', 'Aging SJ Outs.(hari)', 'Depo', 'Keterangan'],
-    ...d.antrian.map((r, i) => [i + 1, r[0], r[1], r[4], r[5], r[2], r[7], orLabel(r[8]), r[8], r[12] || '', r[11] || '', r[9] == null ? '' : r[9], r[3], r[6]])]);
+    ...d.antrian.map((r, i) => [i + 1, r[0], r[1], r[4], r[5], r[2], r[7], orLabel(r[8]), r[8], r[12] || '', r[11] || '', r[9] == null ? '' : r[9], depoName(r[3]), r[6]])]);
   w2['!cols'] = [6, 14, 28, 16, 12, 17, 17, 12, 10, 14, 14, 12, 16, 30].map(w => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, w2, 'List Antrian');
   XLSX.utils.book_append_sheet(wb, w1, 'List Driver');
@@ -1291,7 +1317,8 @@ const drvStatus = d => d.aktif === true ? 'Aktif' : d.aktif === false ? 'Nonakti
 const SRC_NOTE = ' · sumber DB1 / db_utilisasi';
 // filter Master Driver (pop up): pilihan kosong dalam satu field = semua
 const MDF_FIELDS = [   // [kunci, judul, pilihan, nilai per driver, menunggu sumber data]
-  ['tipe', 'Tipe Driver', [['DM', 'DM'], ['CD', 'CD'], ['DOS', 'DOS']], d => tipeDriver(d.id_driver), false],
+  ['proj', 'Project', [['Exim Trailler', 'Exim Trailer'], ['LOBP', 'LOBP'], ['ESA', 'ESA']], d => d.project, false],
+  ['tipe', 'Tipe Driver', [['DM', 'DM'], ['DOS', 'DOS']], d => tipeDriver(d.id_driver), false],
   ['klinik', 'Status Klinik', [['FIT', 'Fit'], ['UNFIT', 'Unfit'], ['-', 'Belum ada data']], d => klinikOf(d.id_driver).toUpperCase() || '-', false],
   ['ship', 'Last Shipment Status', [['On Progress', 'On Progress'], ['Ready', 'Ready'], ['Closed', 'Closed'], ['-', 'Tidak ada shipment']], d => d.last_loc || '-', false]
 ];
@@ -1321,15 +1348,15 @@ function lastLocCell(d) {
 const MD_TIPE_URUT = ['DM', 'DOS', 'CD'];
 const mdRank = id => { const i = MD_TIPE_URUT.indexOf(tipeDriver(id)); return i < 0 ? MD_TIPE_URUT.length : i; };
 function renderMasterDriver() {
-  const all = driverListToday(), q = $('#searchMD').value.trim().toLowerCase();
+  const all = driverListAll(), q = $('#searchMD').value.trim().toLowerCase();
   const list = all.filter(d => (d.id_driver.toLowerCase().includes(q) || d.nama.toLowerCase().includes(q)) && mdfOk(d) && (MF.driver === 'all' || drvStatus(d) === MF.driver))
     .sort((a, b) => mdRank(a.id_driver) - mdRank(b.id_driver) || a.id_driver.localeCompare(b.id_driver));
-  $('#tbMD').innerHTML = list.length ? list.map((d, i) => `<tr><td class="num">${i + 1}</td><td class="l">${esc(d.id_driver)}</td><td class="l">${esc(d.nama)}</td>` +
+  $('#tbMD').innerHTML = list.length ? list.map((d, i) => `<tr><td class="num">${i + 1}</td><td class="l">${esc(d.id_driver)}</td><td class="l">${esc(d.nama)}</td><td>${esc(d.project) || '-'}</td>` +
     (drvStatus(d) ? `<td><span class="pill ${d.aktif ? 'c-OR' : 'c-O'}">${drvStatus(d)}</span></td>` : '<td><span class="note" title="Driver tidak ditemukan di puninar_dms atau database belum terhubung">?</span></td>') +
     `<td>${klinikCell(d.id_driver)}</td>` + (d.last_loc ? `<td>${shipPill(d.last_loc)}</td>` : '<td class="note" title="Tidak ada shipment 7 hari terakhir">-</td>') +
     (d.last_unloading ? `<td class="l" title="Tiba ${fmtApiDT(d.last_unloading_at)}">${esc(d.last_unloading)}</td>` : '<td class="note" title="Tidak ada stop bongkar (D) dalam 7 hari terakhir">-</td>') +
     lastLocCell(d) + '</tr>').join('')   // Status Klinik, Last Shipment Status, Last Unloading, Last Location
-    : `<tr><td colspan="8" class="empty-row">${!S.loaded.api ? 'Memuat data driver…' : !all.length ? 'Data driver tidak bisa dimuat: ' + esc(API.err) : 'Tidak ada driver yang cocok dengan pencarian / filter'}</td></tr>`;
+    : `<tr><td colspan="9" class="empty-row">${!S.loaded.api ? 'Memuat data driver…' : !all.length ? 'Data driver tidak bisa dimuat: ' + esc(API.err) : 'Tidak ada driver yang cocok dengan pencarian / filter'}</td></tr>`;
   $('#cntMD').textContent = all.length + ' driver' + (list.length < all.length ? ` · menampilkan ${list.length}` : '') + SRC_NOTE + ' + puninar_dms (Status Driver)';
 }
 // filter Master Unit (pop up): Status P2H; tidak dicentang = semua
@@ -1546,7 +1573,6 @@ function renderData() {
     <label>Pool untuk SJ Outstanding<select id="setPool">${pools.map(p => `<option value="${esc(p)}"${p === st.sjPool ? ' selected' : ''}>${esc(p)}</option>`).join('')}<option value="ALL"${st.sjPool === 'ALL' ? ' selected' : ''}>Semua pool</option></select><small>Daftar pool diambil dari file Download Detail SJ.</small></label>
     <label>Sumber Aging SJ<select id="setAge"><option value="tender"${st.agingSrc !== 'file' ? ' selected' : ''}>Hitung dari Tgl Tender ke hari ini</option><option value="file"${st.agingSrc === 'file' ? ' selected' : ''}>Pakai kolom Aging di file SJ</option></select><small>Kolom Aging di file SJ = selisih hari terhadap Target Date (negatif = belum jatuh tempo).</small></label>
     <label>Batas merah Aging (hari)<input type="number" min="0" max="60" id="setRed" value="${st.agingRed}"><small>Aging sama dengan atau lebih dari angka ini diberi warna merah.</small></label>
-    <label>Saat ganti tanggal, driver yang sudah OR<select id="setRoll"><option value="keep"${st.orRollover !== 'remove' ? ' selected' : ''}>Tetap di antrian</option><option value="remove"${st.orRollover === 'remove' ? ' selected' : ''}>Dikeluarkan dari antrian</option></select><small>Driver yang belum OR selalu tetap di antrian. Riwayat harian tersimpan di History Antrian.</small></label>
     <div class="logo-wrap"><div class="logo-title">Logo aplikasi</div><div class="logo-opts" role="radiogroup" aria-label="Pilih logo aplikasi">${Object.keys(LOGOS).map(k => `<button type="button" class="logo-opt" role="radio" aria-checked="${st.logo === k}" aria-pressed="${st.logo === k}" data-logo="${k}" title="${esc(LOGO_NAMES[k])}">${LOGOS[k]}<span>${esc(LOGO_NAMES[k])}</span></button>`).join('')}</div><small>Pilihan logo dipakai semua orang. A = logo lama dengan driver diperbesar.</small></div>
   </div></div>`;
   const dz = $('#drop');
@@ -1561,7 +1587,6 @@ function renderData() {
   $('#setPool').onchange = e => setSetting('sjPool', e.target.value);
   $('#setAge').onchange = e => setSetting('agingSrc', e.target.value);
   $('#setRed').onchange = e => setSetting('agingRed', Math.max(0, Math.min(60, parseInt(e.target.value, 10) || 3)));
-  $('#setRoll').onchange = e => setSetting('orRollover', e.target.value);
   el.querySelectorAll('.logo-opt').forEach(b => { b.onclick = () => setSetting('logo', b.dataset.logo); });
 }
 
@@ -1699,23 +1724,23 @@ function renderAsumsi() {
   <div class="panel"><h3>Tujuan &amp; penyimpanan data</h3><table>
   <tr><td>Tujuan</td><td>Menampilkan <b>antrian driver yang bisa diberi order</b>, status ketersediaan (AVA), dan sudah berapa shipment yang didapat driver hari ini.</td></tr>
   <tr><td>Sumber data</td><td><b>Driver, absensi, Last Shipment, dan unit</b> diambil dari database <b>DB1 / db_utilisasi</b> lewat backend lokal PHP (<b>app/lib.php</b>, API <b>public/api/index.php</b>), diperbarui otomatis tiap 30 detik. Halaman harus dibuka lewat <b>http://127.0.0.1:8000</b> (jalankan <b>php -S 127.0.0.1:8000 -t public server/router.php</b> dari folder project). Sumber lain: <b>puninar_dms</b> (Status Driver), <b>puninar_p2h</b> (Status P2H), <b>odongnew_db</b> (SJ Outstanding & Aging SJ), dan <b>db_utilisasi / mst_depo</b> (pilihan Depo). Antrian, Depo, Keterangan, file yang diupload, setting, dan History tersimpan di <b>database QUEDRIVE (MySQL)</b> sehingga sama di semua komputer; setiap driver yang masuk antrian tersimpan sebagai 1 baris di tabel <b>qd_antrian</b> (lengkap dengan waktu antri dan waktu keluar). Data tidak disimpan di browser; bila database QUEDRIVE tidak bisa dihubungi, dashboard menjadi baca saja.</td></tr>
-  <tr><td>Master Driver &amp; Unit</td><td><b>Master Driver</b> = semua driver di trx_dms_absent hari ini (filter awalan DM- dinonaktifkan sementara). <b>Master Unit</b> = mst_lookup_lines dengan lookup_code_header = MST_UNIT_TAHUN dan status = ACTIVE (Nopol = name, Tipe Unit = attribute_v3, Pool = attribute_v4, Customer = attribute_v2). Master tidak perlu diupload lagi.</td></tr>
+  <tr><td>Master Driver &amp; Unit</td><td><b>Akses data</b>: sementara project <b>Exim Trailer, LOBP, ESA</b> (nanti mengikuti role user; driver Exim Trailer yang membawa shipment Pool Cilegon Trailer ikut karena project-nya Exim Trailler; ESA selalu dengan pihak ketiga sehingga absensinya wajar selalu OR). <b>Master Driver</b> = <b>mst_driver</b> dengan project_name = Exim Trailler / LOBP / ESA, awalan <b>DM- dan DOS-</b>, aktif dan nonaktif (Status Driver menurut <b>puninar_dms</b> is_active). <b>List Driver dan antrian hanya driver Aktif</b>: driver nonaktif / tidak ada di puninar_dms tidak bisa masuk antrian (bila puninar_dms gagal dibaca, cadangan mst_driver.status); absen hari ini (trx_dms_absent) ditempelkan lewat dm_number = driver_id, driver tanpa baris absen tampil Belum Absen. Driver di luar mst_driver tidak ditampilkan. <b>Master Unit</b> = mst_lookup_lines dengan lookup_code_header = MST_UNIT_TAHUN dan status = ACTIVE (Nopol = name, Tipe Unit = attribute_v3, Pool = attribute_v4, Customer = attribute_v2). Master tidak perlu diupload lagi.</td></tr>
   <tr><td>Format tanggal</td><td>Seluruh aplikasi memakai <b>dd-Mmm-yy</b> (contoh 06-Oct-26); kolom Absen MTA dan Antri memakai dd-Mmm | HH:MM. Saat upload master, tanggal juga dibaca dalam bentuk teks 01-Oct-26, 01/10/2026, atau 2026-10-01.</td></tr>
   <tr><td>Logo &amp; tata letak header</td><td>Logo <b>Puninar</b> berada di <b>kanan atas header</b> (sama seperti APEX), sedangkan merek <b>QUEDRIVE</b> dengan ikon driver dan truk berada di kiri atas menu. Ikon Quedrive punya empat pilihan (A sampai D) di <b>Upload &amp; Setting → Logo aplikasi</b>; default A, yaitu logo lama dengan driver diperbesar agar berbeda dari logo DUIT. Tombol <b>Day/Night</b> berada di <b>kiri bawah</b> menu (menampilkan mode tujuan: "Night" saat terang, "Day" saat gelap) dengan tulisan kecil nama aplikasi dan tahun di bawahnya; pilihan tema tersimpan di browser.</td></tr>
-  <tr><td>Filter &amp; jam di layar</td><td>Status penyimpanan data (terhubung ke database atau tidak) tampil di <b>kiri bawah layar</b>. Di tab <b>Master Driver</b> ada kolom pencarian (ID / Nama), pilihan <b>Status Driver</b> (Semua / Aktif / Nonaktif), dan tombol <b>Filter</b>: Tipe Driver (DM, CD, DOS menurut awalan ID Driver) dan Status Klinik (Fit / Unfit). Status Driver dan Status Klinik sudah bisa dipilih, tetapi <b>belum memengaruhi tabel</b> sampai sumber datanya ditentukan. Di kanan atas layar tertulis hari, tanggal, dan jam dengan format <b>Ddd, dd-Mmm-yy | hh:mm</b> (mis. Wed, 07-Oct-26 | 14:18).</td></tr>
-  <tr><td>Kolom di tab Master</td><td><b>Master Driver</b>: No, ID Driver, Nama Driver, Status Driver (Aktif / Nonaktif), Status Klinik, Last Unloading, Last Location. <b>Status Driver</b> dari puninar_dms / v_driver_career_utilisasi ; is_active (TRUE = Aktif, FALSE = Nonaktif), dicocokkan lewat nik = ID Driver. <b>Last Unloading</b> = location_name dari stop bongkar (trx_gps_tracking ; stop_type = D) terbaru milik driver (primary_driver_num) menurut final_ata_pta, tender 7 hari terakhir, tanpa cancel; stop yang waktunya belum lewat diabaikan, "-" bila tidak ada. <b>Last Shipment Status</b> = sama dengan Last Shipment di List Driver. <b>Last Location</b> = tombol <b>Lokasi</b> ke live tracking Puninar (nopol dalam Base64), hanya bila shipment terakhir On Progress / Ready <b>dan</b> shipment terbaru yang memakai nopol itu memang milik driver ini; selain itu "-". Status Klinik masih <b>"?"</b> karena sumber datanya belum ditentukan. <b>Master Unit</b>: Tipe Unit, Pool, Customer, dan <b>Status P2H</b> (dari file P2H yang diupload, menurut nopol).</td></tr>
+  <tr><td>Filter &amp; jam di layar</td><td>Status penyimpanan data (terhubung ke database atau tidak) tampil di <b>kiri bawah layar</b>. Di tab <b>Master Driver</b> ada kolom pencarian (ID / Nama), pilihan <b>Status Driver</b> (Semua / Aktif / Nonaktif), dan tombol <b>Filter</b>: Project (Exim Trailer, LOBP, ESA), Tipe Driver (DM, DOS menurut awalan ID Driver) dan Status Klinik (Fit / Unfit). Status Driver dan Status Klinik sudah bisa dipilih, tetapi <b>belum memengaruhi tabel</b> sampai sumber datanya ditentukan. Di kanan atas layar tertulis hari, tanggal, dan jam dengan format <b>Ddd, dd-Mmm-yy | hh:mm</b> (mis. Wed, 07-Oct-26 | 14:18).</td></tr>
+  <tr><td>Kolom di tab Master</td><td><b>Master Driver</b>: No, ID Driver, Nama Driver, Project (mst_driver.project_name: Exim Trailler, LOBP, ESA), Status Driver (Aktif / Nonaktif), Status Klinik, Last Unloading, Last Location. <b>Status Driver</b> dari puninar_dms / v_driver_career_utilisasi ; is_active (TRUE = Aktif, FALSE = Nonaktif), dicocokkan lewat nik = ID Driver. <b>Last Unloading</b> = location_name dari stop bongkar (trx_gps_tracking ; stop_type = D) terbaru milik driver (primary_driver_num) menurut final_ata_pta, tender 7 hari terakhir, tanpa cancel; stop yang waktunya belum lewat diabaikan, "-" bila tidak ada. <b>Last Shipment Status</b> = sama dengan Last Shipment di List Driver. <b>Last Location</b> = tombol <b>Lokasi</b> ke live tracking Puninar (nopol dalam Base64), hanya bila shipment terakhir On Progress / Ready <b>dan</b> shipment terbaru yang memakai nopol itu memang milik driver ini; selain itu "-". Status Klinik masih <b>"?"</b> karena sumber datanya belum ditentukan. <b>Master Unit</b>: Tipe Unit, Pool, Customer, dan <b>Status P2H</b> (dari file P2H yang diupload, menurut nopol).</td></tr>
   </table></div>
 
   <div class="panel"><h3>Absen &amp; List Driver</h3><table>
   <tr><td><span class="step">1</span>AVA / NOT AVA</td><td><b>AVA</b> = <b>initial = X</b> (hadir di pool) <b>dan Last Shipment = Closed atau tidak ada shipment 7 hari terakhir</b>; tombol + aktif. Selain itu <b>NOT AVA</b> dan tidak bisa dimasukkan ke antrian. Urutan: AVA, lalu Pool/On Road, lalu Izin/Sakit/Tidak Hadir, lalu belum absen. Saat ganti hari, sebelum baris absen hari baru dibuat (±00:00-00:04), daftar driver kemarin ditampilkan dengan status Belum Absen.</td></tr>
   <tr><td><span class="step">2</span>Tipe Absensi &amp; Jam</td><td>Dari <b>trx_dms_absent.initial</b> hari ini (huruf besar/kecil diabaikan): X = Pool, OR = On Road, A = Tidak Hadir, I = Izin, S = Sakit; selain itu (kosong, O, ADJ) = Belum Absen. <b>Jam</b> = updated_at saat initial terisi.</td></tr>
   <tr><td><span class="step">3</span>Last Shipment</td><td>Dari <b>trx_gps_tracking</b> 7 hari terakhir (tender_date); shipment cancel diabaikan; driver dicocokkan ke <b>primary_driver_num dan secondary_driver_num</b> (driver yang ada di dalam truk ikut memiliki shipment itu; berlaku juga untuk Last Unloading dan Last Location). Yang dipakai adalah shipment dengan waktu <b>paling dekat ke sekarang</b>: waktu = <b>closed_date</b> bila Closed (forceclosed dihitung Closed), selain itu <b>tender_date</b> (On Progress / Ready). Ikon ▾ di kolom Aksi menampilkan Tipe Absensi dan Last Shipment (nomor shipment, nopol, tanggal tender, tanggal closed).</td></tr>
-  <tr><td><span class="step">4</span>Filter List Driver</td><td>Dropdown <b>Status Driver</b> (Semua, AVA, NOT AVA) di sebelah kiri tombol Filter. Tombol <b>Filter</b> membuka pop up: Tipe Driver (DM, CD, DOS menurut awalan ID Driver), Tipe Absensi (Pool, On Road, Izin, Sakit, Tidak Hadir, Belum), Last Shipment (Ready, On Progress, Closed, Tidak ada). Dalam satu field boleh pilih lebih dari satu (atau); antar field harus terpenuhi semua (dan). Field tanpa pilihan = semua.</td></tr>
-  <tr class="warn"><td>Belum terhubung</td><td><b>Lokasi Geofence</b> belum punya sumber database. <b>Status Order</b> dari Last Shipment (trx_gps_tracking); file DOTS hanya cadangan. Kartu <b>OR</b> dari absen On Road hari ini (trx_dms_absent.initial = OR) ditambah driver yang baru dipairing hari ini. Kartu <b>SPK / SPO</b> dari <b>trx_shipment_preparation ; shipment_type</b> (shipment unik dengan tanggal onroad hari ini; tanpa tanggal tender atau dibatalkan tidak dihitung; rincian 20/40 FT dari trx_gps_tracking, yang belum ada masuk Lainnya).</td></tr></table></div>
+  <tr><td><span class="step">4</span>Filter List Driver</td><td>Dropdown <b>Status Driver</b> (Semua, AVA, NOT AVA) di sebelah kiri tombol Filter. Tombol <b>Filter</b> membuka pop up: Project (Exim Trailer, LOBP, ESA menurut mst_driver.project_name), Tipe Driver (DM, DOS menurut awalan ID Driver), Tipe Absensi (Pool, On Road, Izin, Sakit, Tidak Hadir, Belum), Last Shipment (Ready, On Progress, Closed, Tidak ada). Dalam satu field boleh pilih lebih dari satu (atau); antar field harus terpenuhi semua (dan). Field tanpa pilihan = semua.</td></tr>
+  <tr><td>Sumber kartu</td><td><b>Status Order</b> dari Last Shipment (trx_gps_tracking); file DOTS hanya cadangan. Kartu <b>OR</b> dari absen On Road hari ini (trx_dms_absent.initial = OR) ditambah driver yang baru dipairing hari ini. Kartu <b>SPK / SPO</b> dari <b>trx_shipment_preparation ; shipment_type</b>, hanya <b>ownership_shipment = POOL NAGRAK TRAILER</b> (shipment unik dengan tanggal onroad hari ini; tanpa tanggal tender atau dibatalkan tidak dihitung; rincian 20/40 FT dari trx_gps_tracking, yang belum ada masuk Lainnya).</td></tr></table></div>
 
   <div class="panel"><h3>List Antrian &amp; Status Order</h3><table>
   <tr><td><span class="step">1</span>Urutan antrian</td><td>Mengikuti urutan driver dimasukkan (pertama masuk = nomor 1); kolom <b>Antri</b> mencatat tanggal dan jam saat tombol + ditekan, kolom <b>Absen MTA</b> tanggal dan jam absen driver (format dd-Mmm | HH:MM). Antrian dipakai bersama oleh semua orang. Belum ada fitur mengubah urutan manual.</td></tr>
-  <tr><td><span class="step">2</span>Isian per baris</td><td><b>Depo</b> dipilih dari dropdown (db_utilisasi / mst_depo ; geo_code, urut abjad); <b>Keterangan</b> diisi manual. <b>Nopol Unit</b> dipilih/diketik dari Master Unit aktif; <b>Tipe Unit</b> terisi otomatis jika nopol sama persis (huruf besar/kecil tidak dibedakan), kosong jika tidak ditemukan.</td></tr>
+  <tr><td><span class="step">2</span>Isian per baris</td><td><b>Depo</b> dipilih dari dropdown (db_utilisasi / mst_depo ; geo_code, urut abjad, tanpa awalan project: PL/EXIM.DEPO-BCC tampil DEPO-BCC); <b>Keterangan</b> diisi manual. <b>Nopol Unit</b> dipilih/diketik dari Master Unit aktif; <b>Tipe Unit</b> terisi otomatis jika nopol sama persis (huruf besar/kecil tidak dibedakan), kosong jika tidak ditemukan.</td></tr>
   <tr><td><span class="step">3</span>Status Order</td><td>Dari <b>Last Shipment</b> driver (DB1 / db_utilisasi / trx_gps_tracking). <b>SUDAH</b> (hijau; arahkan kursor untuk melihat nomor shipment &amp; jam tender) jika Last Shipment <b>Ready atau On Progress</b> dan tender-nya <b>setelah driver masuk antrian</b> (artinya sudah dipairing ke shipment baru); <b>BELUM</b> (abu-abu) jika belum. Shipment baru muncul setelah di-tender, jadi yang baru dipairing tetapi belum di-tender masih BELUM. Bila <b>Nopol Unit</b> masih kosong, diisi otomatis dengan nopol shipment tersebut (isian manual tidak ditimpa). Bila database tidak terhubung, memakai file DOTS Report. Driver <b>tetap di antrian</b> walau sudah diorder (tidak otomatis dikembalikan ke List Driver) karena bisa diorder lagi. Kartu <b>Sudah Diorder</b> = driver di antrian dengan Status Order SUDAH. Pada data DOTS (cadangan), <b>klik tulisan SUDAH</b> untuk melihat detail shipment hari itu: Customer, No. Order (ORDER BASE; jika kosong memakai NOMOR ORDER), No. Shipment, dan Rute (NAMA RUTE).</td></tr>
   <tr><td>Aging SJ Outs.(hari)</td><td>Menggantikan kolom Out. SJ. Berisi <b>aging SJ outstanding terlama</b> milik driver tersebut, dengan sumber, pool, dan batas merah yang sama seperti tab SJ Outstanding (merah jika ≥ ${st.agingRed} hari). Jika driver punya lebih dari satu SJ, tampil jumlah SJ di bawah angka. <b>Klik angka</b> untuk melihat daftarnya: ID Driver, Nama Driver, Customer, Tgl Tender, No. Shipment, Aging (Hari). Tampil "-" jika tidak ada SJ outstanding atau file SJ belum diupload.</td></tr>
   <tr><td>Urutan kolom</td><td>No (nomor antrian), ID Driver, Nama, Nopol Unit, Tipe Unit, Absen MTA, Antri, Status Order, Status Klinik, Status P2H, Aging SJ Outs.(hari), Depo, Keterangan, Aksi.</td></tr>
@@ -1727,7 +1752,7 @@ function renderAsumsi() {
   <tr><td>Filter Status Order</td><td>Di <b>baris filter tepat di atas header kolom Status Order</b> ada pilihan <b>Semua / SUDAH / BELUM</b>. Filter hanya mengubah tampilan; nomor urut tetap nomor antrian sebenarnya dan kartu di atas tetap menghitung seluruh antrian.</td></tr>
   <tr class="warn"><td>Placeholder &amp; validasi</td><td>Belum ada pengecekan nopol yang dipakai ganda, atau pemblokiran driver yang sudah diorder.</td></tr>
   <tr><td><span class="step">4</span>Hapus &amp; reset</td><td>Ikon tempat sampah menghapus satu driver. <b>Reset Antrian</b> (dengan konfirmasi) mengosongkan seluruh antrian untuk semua orang; riwayatnya tetap ada di History Antrian.</td></tr>
-  <tr><td><span class="step">5</span>Ganti tanggal</td><td>Dicek otomatis saat tanggal berganti. Driver yang <b>belum OR tetap di antrian</b>. Driver yang sudah OR mengikuti setting <i>Saat ganti tanggal, driver yang sudah OR</i> (sekarang: <b>${st.orRollover === 'remove' ? 'dikeluarkan dari antrian' : 'tetap di antrian'}</b>). Penentuan OR memakai shipment pada tanggal sebelumnya dari DOTS terakhir yang diupload. Status Order dihitung ulang untuk tanggal baru; absen perlu diulang.</td></tr></table></div>
+  <tr><td><span class="step">5</span>Ganti tanggal</td><td>Dicek otomatis saat tanggal berganti (oleh dashboard pertama yang terbuka, setelah data database termuat). Driver yang <b>sudah dipairing sejak masuk antrian</b> (Status Order SUDAH, atau shipment terakhirnya ditender setelah ia masuk antrian walaupun sudah Closed) tetap di antrian saat tanggal berganti, lalu <b>otomatis kembali ke List Driver setelah ia absen di hari baru</b> (Tipe Absensi bukan Belum Absen; dicek tiap 15 detik). Di List Driver statusnya mengikuti aturan AVA / NOT AVA biasa. Driver yang sudah dipairing tetapi belum absen, dan driver yang belum dipairing, <b>tetap di antrian</b>. Kondisi antrian sebelum ganti tanggal tersimpan di History.</td></tr></table></div>
 
   <div class="panel"><h3>Status OR dari DOTS Report</h3><table>
   <tr><td>Shipment valid (OR &amp; Status Order)</td><td>Baris dengan TANGGAL TENDER terisi, STATUS FPT bukan CANCEL, dan punya ID DRIVER 1 dan/atau 2. Baris lain diabaikan. Shipment yang sama pada driver dan tanggal yang sama dihitung satu kali. Aturan ini dipakai untuk <b>status OR dan Status Order</b> (REPLAN masih ikut dihitung di sini). Kotak Shipment SPK / SPO memakai aturan yang lebih ketat: hanya NEW dan CARRY OVER.</td></tr>
@@ -1778,7 +1803,7 @@ const DAY_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 function clockText() { const n = new Date(); return DAY_EN[n.getDay()] + ', ' + fmtSerial(dayOfDate(n)) + ' | ' + getCurrentTimeStr(); }
 function tickClock() {
   $('#clock').textContent = clockText();
-  maybeRollover();
+  maybeRollover().then(returnPaired);
 }
 async function initApp() {
   renderMasterDriver(); renderMasterUnit(); renderListDriver(); renderListAntrian(); renderAsumsi(); tickClock(); renderShareBar(); loadApi();
