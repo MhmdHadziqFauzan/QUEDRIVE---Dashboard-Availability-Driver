@@ -2,6 +2,7 @@
 -- Sumber: DB4 / odongnew_db / so.so_trx_document
 -- Belum kembali = perjalanan selesai (TRIP_ENDED) tetapi dokumen belum diterima admin mana pun (last_status_id kosong,
 -- tidak ada riwayat di so_trx_document_history). Baris yang dihapus diabaikan.
+-- Hanya SJ dengan tender_date mulai 01-Nov-2026.
 SELECT shipment_number,
        driver_id,
        customer_name,
@@ -11,3 +12,4 @@ FROM so.so_trx_document
 WHERE deleted_at IS NULL
   AND trip_status = 'TRIP_ENDED'
   AND last_status_id IS NULL
+  AND tender_date >= CAST(:mulai AS date)   -- mulai tender November 2026 (SJ_MULAI di lib.php)

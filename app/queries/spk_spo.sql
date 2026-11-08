@@ -9,6 +9,6 @@ SELECT shipment_id,
        date_execution,
        cancel_date
 FROM trx_shipment_preparation
-WHERE ownership_shipment = :pool
+WHERE FIND_IN_SET(ownership_shipment, :pools)   -- pool sesuai akses role user (dipisah koma)
   AND (tender_date >= :sejak
        OR date_execution >= :sejak2)

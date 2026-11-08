@@ -57,3 +57,45 @@ CREATE TABLE IF NOT EXISTS qd_upload (
   PRIMARY KEY (jenis, bagian),
   KEY idx_diubah (diubah_pada)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ===== Role & akses data per project (dasar menu login nanti). Semua admin memakai menu & fungsi yang sama;
+-- yang dibedakan hanya data project / pool yang boleh dilihat. Belum ada halaman login: user yang dipakai = QD_LOGIN_USER di .env,
+-- bila kosong pakai 'admin_exim'.
+
+-- Daftar role
+CREATE TABLE IF NOT EXISTS qd_role (
+  kode        VARCHAR(30)   NOT NULL PRIMARY KEY,   -- mis. ADMIN_EXIM
+  nama        VARCHAR(100)  NOT NULL,
+  keterangan  VARCHAR(255)  NULL,
+  aktif       TINYINT(1)    NOT NULL DEFAULT 1,
+  dibuat_pada DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Akses data per role. jenis = PROJECT (nilai = mst_driver.project_name) atau POOL (nilai = ownership_shipment)
+CREATE TABLE IF NOT EXISTS qd_role_akses (
+  role_kode   VARCHAR(30)   NOT NULL,
+  jenis       VARCHAR(10)   NOT NULL,
+  nilai       VARCHAR(100)  NOT NULL,
+  PRIMARY KEY (role_kode, jenis, nilai)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- User dashboard (password / SSO ditambahkan saat menu login dibuat)
+CREATE TABLE IF NOT EXISTS qd_user (
+  username    VARCHAR(50)   NOT NULL PRIMARY KEY,
+  nama        VARCHAR(100)  NOT NULL,
+  role_kode   VARCHAR(30)   NOT NULL,
+  aktif       TINYINT(1)    NOT NULL DEFAULT 1,
+  dibuat_pada DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_role (role_kode)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Data awal (INSERT IGNORE: tidak menimpa bila sudah diubah)
+INSERT IGNORE INTO qd_role (kode, nama, keterangan) VALUES
+  ('ADMIN_EXIM', 'Admin Exim Trailer', 'Akses project Exim Trailer, LOBP, ESA - Pool Nagrak Trailer');
+INSERT IGNORE INTO qd_role_akses (role_kode, jenis, nilai) VALUES
+  ('ADMIN_EXIM', 'PROJECT', 'Exim Trailler'),
+  ('ADMIN_EXIM', 'PROJECT', 'LOBP'),
+  ('ADMIN_EXIM', 'PROJECT', 'ESA'),
+  ('ADMIN_EXIM', 'POOL', 'POOL NAGRAK TRAILER');
+INSERT IGNORE INTO qd_user (username, nama, role_kode) VALUES
+  ('admin_exim', 'Admin Exim Trailer', 'ADMIN_EXIM');

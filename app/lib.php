@@ -20,6 +20,8 @@ const P2H_LOOKBACK_DAYS = 30;
 
 // DB4 (odongnew_db): Surat Jalan untuk SJ Outstanding & Aging SJ
 const SJ_DB = 'DB4';
+// SJ ditampilkan mulai tender November 2026 (keputusan 06-Nov-2026); SJ dengan tender sebelum ini tidak dihitung
+const SJ_MULAI = '2026-11-01';
 
 // Tipe Absensi dari trx_dms_absent.initial (huruf besar/kecil diabaikan); selain ini = Belum Absen (termasuk O, ADJ)
 const TIPE_ABSEN = ['X' => 'Pool', 'OR' => 'On Road', 'A' => 'Tidak Hadir', 'I' => 'Izin', 'S' => 'Sakit'];
@@ -29,9 +31,11 @@ const SHIP_LABEL = ['onprogress' => 'On Progress', 'ready' => 'Ready', 'closed' 
 // Akses data (hasil meeting 05-Nov-2026): driver project Exim Trailer, LOBP, ESA; SPK/SPO POOL NAGRAK TRAILER.
 // Driver Exim Trailer yang membawa shipment POOL CILEGON TRAILER ikut karena project-nya Exim Trailler.
 // ESA: shipment selalu dengan pihak ketiga, jadi wajar absensinya selalu OR dan tidak ada di trx_gps_tracking.
-// Nanti diambil dari role user (menu hak akses), bukan konstanta.
+// Akses diambil dari role user di database QUEDRIVE (qd_user -> qd_role_akses), lihat akses().
+// Konstanta di bawah hanya cadangan bila database QUEDRIVE tidak bisa dibaca.
 const AKSES_PROJECT = ['Exim Trailler', 'LOBP', 'ESA'];   // mst_driver.project_name (ejaan sesuai database)
-const AKSES_POOL = 'POOL NAGRAK TRAILER';     // trx_shipment_preparation.ownership_shipment
+const AKSES_POOL = ['POOL NAGRAK TRAILER'];               // trx_shipment_preparation.ownership_shipment
+const LOGIN_DEFAULT = 'admin_exim';   // belum ada halaman login: user = QD_LOGIN_USER di .env, bila kosong ini
 
 date_default_timezone_set('Asia/Jakarta');
 
@@ -87,6 +91,40 @@ function connect(string $prefix = 'DB1', bool $withDb = true): PDO {
         throw new RuntimeException("{$prefix}_TYPE tidak dikenal: $type (pakai mysql atau postgres)");
     }
     return $pdo;
+}
+
+// user yang sedang "login" (sementara dari .env sampai menu login dibuat)
+function login_user(): string {
+    return env('QD_LOGIN_USER') ?: LOGIN_DEFAULT;
+}
+
+// Hak akses data user login: ['user', 'role', 'project' => [...], 'pool' => [...]] dari qd_user + qd_role_akses.
+// Bila database QUEDRIVE tidak bisa dibaca / user tidak ada: cadangan AKSES_PROJECT & AKSES_POOL.
+function akses(): array {
+    static $a = null;
+    if ($a) return $a;
+    $a = ['user' => login_user(), 'role' => null, 'project' => AKSES_PROJECT, 'pool' => AKSES_POOL, 'sumber' => 'cadangan'];
+    try {
+        if (!function_exists('store_db')) require_once __DIR__ . '/store.php';
+        $st = store_db()->prepare('SELECT u.role_kode, ra.jenis, ra.nilai FROM qd_user u JOIN qd_role r ON r.kode = u.role_kode AND r.aktif = 1
+                                   LEFT JOIN qd_role_akses ra ON ra.role_kode = u.role_kode
+                                   WHERE u.username = ? AND u.aktif = 1 ORDER BY ra.jenis, ra.nilai');
+        $st->execute([$a['user']]);
+        $rows = $st->fetchAll();
+        if ($rows) {
+            $p = []; $pool = [];
+            foreach ($rows as $r) {
+                if ($r['jenis'] === 'PROJECT') $p[] = $r['nilai'];
+                if ($r['jenis'] === 'POOL') $pool[] = $r['nilai'];
+            }
+            // urutan project mengikuti AKSES_PROJECT bila ada (Exim, LOBP, ESA), sisanya di belakang
+            usort($p, fn($x, $y) => (array_search($x, AKSES_PROJECT) === false ? 99 : array_search($x, AKSES_PROJECT)) <=> (array_search($y, AKSES_PROJECT) === false ? 99 : array_search($y, AKSES_PROJECT)));
+            $a = ['user' => $a['user'], 'role' => $rows[0]['role_kode'], 'project' => $p, 'pool' => $pool, 'sumber' => 'database'];
+        }
+    } catch (Throwable $e) {
+        error_log('QUEDRIVE akses: ' . $e->getMessage());
+    }
+    return $a;
 }
 
 // komentar "--" dibuang dulu agar teks seperti "00:04" tidak dibaca PDO sebagai parameter
@@ -158,18 +196,6 @@ function last_shipments(array $rows): array {
     return array_map(fn($v) => $v['item'], $best);
 }
 
-// nik -> true (Aktif) / false (Nonaktif) dari DB2; null bila DB2 tidak bisa dibaca (List Driver tetap jalan)
-function driver_status(): ?array {
-    try {
-        $out = [];
-        foreach (fetch_rows('dms_driver_status', [], DMS_DB) as $r)
-            $out[$r['nik']] = in_array($r['is_active'], [true, 1, '1', 't', 'true'], true);
-        return $out;
-    } catch (Throwable $e) {
-        error_log('QUEDRIVE DB2: ' . $e->getMessage());
-        return null;
-    }
-}
 
 // Per driver (primary_driver_num): stop bongkar (stop_type = 'D') terbaru menurut final_ata_pta -> location_name.
 // final_ata_pta berisi waktu rencana bila belum tiba, jadi stop yang waktunya belum lewat diabaikan.
@@ -210,12 +236,11 @@ function build_drivers(string $tanggal): array {
     $ship = last_shipments($rows);
     $unload = last_unloadings($rows, $tanggal);
     $owner = nopol_owner($rows);
-    $aktif = driver_status();
     $out = [];
     // patokan daftar driver = mst_driver (project yang boleh diakses, DM/DOS), aktif MAUPUN nonaktif (Master Driver menampilkan semua);
     // List Driver / antrian di dashboard hanya memakai yang 'aktif' = true. Absen hari ini ditempelkan,
     // driver yang belum punya baris absen tampil Belum Absen. Nama dari mst_driver.
-    foreach (fetch_rows('mst_driver', ['projects' => implode(',', AKSES_PROJECT)]) as $m) {
+    foreach (fetch_rows('mst_driver', ['projects' => implode(',', akses()['project'])]) as $m) {
         $a = ($absen[$m['dm_number']] ?? [])
            + ['driver_id' => $m['dm_number'], 'initial' => null, 'updated_at' => null, 'status_klinik' => null];
         $a['driver_name'] = $m['name'];
@@ -237,16 +262,15 @@ function build_drivers(string $tanggal): array {
             // masih dipegang driver ini (shipment terbaru dengan nopol tsb milik driver ini); selain itu null
             'tracking_nopol' => $jalan && in_array($a['driver_id'], $pemegang, true) ? $s['nopol'] : null,
             'nopol_driver_lain' => $jalan && $pemegang && !in_array($a['driver_id'], $pemegang, true) ? implode(' / ', $pemegang) : null,
-            // aktif dari DB2 (is_active); null = tidak ada di DB2 (dianggap tidak aktif untuk antrian).
-            // Bila DB2 gagal dibaca: cadangan mst_driver.status agar antrian tetap jalan
-            'aktif' => $aktif === null ? $m['status'] === 'active' : ($aktif[$a['driver_id']] ?? null),
+            // aktif dari mst_driver.status (active / inactive); driver nonaktif tidak bisa / tidak tetap di antrian
+            'aktif' => $m['status'] === 'active',
             // Status Klinik dari baris absen tanggal ini (FIT / UNFIT); null = belum ada data klinik
             'klinik' => ($k = strtoupper(trim($a['status_klinik'] ?? ''))) !== '' ? $k : null,
             // AVA: hadir (X) dan Last Shipment Closed, atau hadir (X) tanpa shipment 7 hari terakhir
             'status' => $ini === 'X' && ($last === 'Closed' || $last === null) ? 'AVA' : 'NOT AVA',
         ];
     }
-    return ['tanggal' => $tanggal, 'diambil' => date('Y-m-d\TH:i:s'), 'jumlah' => count($out), 'dms_ok' => $aktif !== null, 'drivers' => $out];
+    return ['tanggal' => $tanggal, 'diambil' => date('Y-m-d\TH:i:s'), 'jumlah' => count($out), 'akses' => akses(), 'drivers' => $out];
 }
 
 // nopol tanpa spasi/strip/titik, huruf besar (B-9028-TEJ = B 9028 TEJ)
@@ -270,43 +294,53 @@ function p2h_status(): ?array {
     }
 }
 
+// Master Unit: hanya unit di pool yang diizinkan role login (akses()['pool'], mis. POOL NAGRAK TRAILER).
+// mst_lookup_lines.attribute_v4 memakai garis bawah (POOL_NAGRAK_TRAILER), jadi dibandingkan setelah '_' -> ' '.
 function build_units(): array {
     $p2h = p2h_status() ?? [];
-    return array_map(function ($r) use ($p2h) {
+    $pools = array_map('strtoupper', akses()['pool']);
+    $rows = array_filter(fetch_rows('units'), fn($r) => in_array(strtoupper(str_replace('_', ' ', (string)$r['pool'])), $pools, true));
+    return array_values(array_map(function ($r) use ($p2h) {
         $p = $p2h[norm_plat($r['nopol'])] ?? null;
         return ['nopol' => $r['nopol'], 'tipe_unit' => norm_tipe($r['tipe_unit']), 'pool' => $r['pool'], 'customer' => $r['customer'],
                 'p2h' => $p['status'] ?? null, 'p2h_at' => iso_min($p['waktu'] ?? null)];
-    }, fetch_rows('units'));
-}
-
-// 20 FT / 40 FT / lainnya dari teks tipe truk (sama dengan truckGroup di dashboard)
-function truck_group(?string $tp): string {
-    $u = strtoupper($tp ?? ''); $a = str_contains($u, '20'); $b = str_contains($u, '40');
-    return $a && !$b ? 't20' : ($b && !$a ? 't40' : 'oth');
+    }, $rows));
 }
 
 // Kartu Shipment SPK / SPO: shipment unik dengan tanggal onroad = $tanggal
 // (onroad = tanggal terbesar antara tender_date dan date_execution).
-// Rincian 20/40 FT dari equipment_group di trx_gps_tracking; shipment yang belum ada di sana masuk "lainnya".
+// Hanya shipment yang dibawa driver dalam scope (mst_driver project sesuai akses role user, primary atau secondary di
+// trx_gps_tracking): SPO vendor dan shipment yang belum ada drivernya tidak dihitung (user: "kami tidak punya SPO").
+// Rincian per scope project (Exim Trailer / LOBP / ESA) menurut project driver yang membawa.
 function build_spk_spo(string $tanggal): array {
     $sejak = date('Y-m-d 00:00:00', strtotime("$tanggal -" . SHIP_LOOKBACK_DAYS . ' days'));
     $ship = [];
-    foreach (fetch_rows('spk_spo', ['pool' => AKSES_POOL, 'sejak' => $sejak, 'sejak2' => "$tanggal 00:00:00"]) as $r) {
+    foreach (fetch_rows('spk_spo', ['pools' => implode(',', akses()['pool']), 'sejak' => $sejak, 'sejak2' => "$tanggal 00:00:00"]) as $r) {
         $tipe = strtoupper(trim($r['shipment_type'] ?? ''));
         // seperti aturan DOTS: shipment tanpa tanggal tender dan yang dibatalkan tidak dihitung
         if (!in_array($tipe, ['SPK', 'SPO'], true) || !$r['tender_date'] || $r['cancel_date'] || stripos($r['status'] ?? '', 'cancel shipment approved') !== false) continue;
         if (max(substr($r['tender_date'] ?? '', 0, 10), substr($r['date_execution'] ?? '', 0, 10)) !== $tanggal) continue;
         $ship[$r['shipment_id']] = $tipe;
     }
-    $truk = [];
+    // dm_number -> project (Exim Trailler / LOBP / ESA); shipment masuk project driver utama, bila di luar scope pakai driver kedua
+    $scope = akses()['project'];
+    $proj = array_column(fetch_rows('mst_driver', ['projects' => implode(',', $scope)]), 'project_name', 'dm_number');
+    $milik = [];
     foreach (array_chunk(array_keys($ship), 500) as $ch) {
         $st = connect()->prepare(sprintf(sql('tipe_truk'), implode(',', array_fill(0, count($ch), '?'))));
         $st->execute($ch);
-        foreach ($st->fetchAll() as $r) $truk[$r['shipment_number']] = $r['equipment_group'];
+        foreach ($st->fetchAll() as $r) {
+            $p = $proj[$r['primary_driver_num'] ?? ''] ?? $proj[$r['secondary_driver_num'] ?? ''] ?? null;
+            if ($p && !isset($milik[$r['shipment_number']])) $milik[$r['shipment_number']] = $p;
+        }
     }
-    $out = ['tanggal' => $tanggal];
-    foreach (['SPK', 'SPO'] as $k) $out[$k] = ['n' => 0, 't20' => 0, 't40' => 0, 'oth' => 0];
-    foreach ($ship as $id => $tipe) { $out[$tipe]['n']++; $out[$tipe][truck_group($truk[$id] ?? null)]++; }
+    // rincian per scope (urutan project di akses role), menggantikan rincian 20/40 FT
+    $out = ['tanggal' => $tanggal, 'scope' => $scope];
+    foreach (['SPK', 'SPO'] as $k) $out[$k] = ['n' => 0, 'per' => array_fill_keys($scope, 0)];
+    foreach ($ship as $id => $tipe) {
+        if (!isset($milik[$id])) continue;
+        $out[$tipe]['n']++; $out[$tipe]['per'][$milik[$id]]++;
+    }
     return $out;
 }
 
@@ -323,7 +357,7 @@ function build_sj(): array {
     $pool = [];
     foreach (fetch_rows('units') as $u) $pool[norm_plat($u['nopol'])] = $u['pool'];
     $out = [];
-    foreach (fetch_rows('sj_outstanding', [], SJ_DB) as $r) {
+    foreach (fetch_rows('sj_outstanding', ['mulai' => SJ_MULAI], SJ_DB) as $r) {
         $p = $pool[norm_plat($r['power_unit'])] ?? null;
         $out[] = ['shipment_number' => $r['shipment_number'], 'driver_id' => $r['driver_id'], 'customer' => $r['customer_name'],
                   'tender_date' => iso_min($r['tender_date']), 'nopol' => $r['power_unit'],

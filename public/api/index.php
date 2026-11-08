@@ -76,14 +76,14 @@ try {
 
         case '/api/drivers':
             $t = date_param();
-            reply(cached("drivers_$t", fn() => build_drivers($t)));
+            reply(cached("drivers_" . login_user() . "_$t", fn() => build_drivers($t)));
 
         case '/api/units':
-            reply(cached('units', 'build_units'));
+            reply(cached('units_' . login_user(), 'build_units'));
 
         case '/api/spk-spo':
             $t = date_param();
-            reply(cached("spk_spo_$t", fn() => build_spk_spo($t)));
+            reply(cached("spk_spo_" . login_user() . "_$t", fn() => build_spk_spo($t)));
 
         case '/api/depo':
             reply(cached('depo', 'build_depo'));
