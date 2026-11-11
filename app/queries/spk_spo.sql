@@ -10,5 +10,6 @@ SELECT shipment_id,
        cancel_date
 FROM trx_shipment_preparation
 WHERE FIND_IN_SET(ownership_shipment, :pools)   -- pool sesuai akses role user (dipisah koma)
+  AND tender_date >= :batas                       -- batas bawah ber-index (31 hari) agar tidak membaca seluruh tabel
   AND (tender_date >= :sejak
        OR date_execution >= :sejak2)

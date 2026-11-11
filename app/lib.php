@@ -6,7 +6,7 @@
    Hanya folder public/ yang jadi web root: app/ dan .env (berisi password) tidak bisa dibuka dari browser. */
 
 const SHIP_LOOKBACK_DAYS = 7;   // Last Shipment dicari dari shipment dengan tender_date 7 hari terakhir
-const CACHE_SECONDS = 30;       // data sumber diambil ulang paling cepat tiap 30 detik
+const CACHE_SECONDS = 120;      // data sumber diambil ulang paling cepat tiap 2 menit (integrasi sumber sendiri ±10 menit)
 
 // view PostgreSQL di DB2 (puninar_dms): endpoint /api/dms/<nama> -> file queries/<sql>.sql
 const DMS_DB = 'DB2';
@@ -20,6 +20,11 @@ const P2H_LOOKBACK_DAYS = 30;
 
 // DB4 (odongnew_db): Surat Jalan untuk SJ Outstanding & Aging SJ
 const SJ_DB = 'DB4';
+// FMS (PostgreSQL): Master Unit (fl.fl_mst_fleet_otm) & Status FMS BD (service order bengkel)
+const FMS_DB = 'DB5';
+const FMS_BD_LOOKBACK_DAYS = 30;
+// shipment untuk dashboard: tender 15 hari terakhir (popup order 7 hari, ADJ H-3, shipment terakhir driver OR)
+const SHIPMENT_LOOKBACK_DAYS = 15;   // query breakdown: SO yang punya aktivitas 30 hari terakhir sampai hari ini
 // SJ ditampilkan mulai tender November 2026 (keputusan 06-Nov-2026); SJ dengan tender sebelum ini tidak dihitung
 const SJ_MULAI = '2026-11-01';
 
@@ -139,11 +144,11 @@ function fetch_rows(string $name, array $params = [], string $prefix = 'DB1'): a
 }
 
 // cache file di storage/cache (PHP-FPM tidak menyimpan memori antar request)
-function cached(string $key, callable $fn) {
+function cached(string $key, callable $fn, int $ttl = CACHE_SECONDS) {
     $dir = __DIR__ . '/../storage/cache';
     if (!is_dir($dir)) @mkdir($dir, 0775, true);
     $f = $dir . '/' . preg_replace('/[^A-Za-z0-9_-]/', '_', $key) . '.json';
-    if (is_file($f) && time() - filemtime($f) < CACHE_SECONDS) {
+    if (is_file($f) && time() - filemtime($f) < $ttl) {
         $hit = json_decode((string) @file_get_contents($f), true);
         if ($hit !== null) return $hit;
     }
@@ -279,13 +284,26 @@ function norm_plat(?string $v): string {
 }
 
 // norm_plat(nopol) -> ['status', 'waktu']; null bila DB3 tidak bisa dibaca (Master Unit tetap jalan)
-function p2h_status(): ?array {
+// Status P2H = status TERAKHIR (tanpa batas umur). Langkah 1: P2H 30 hari terakhir (cepat, ber-index created_at).
+// Langkah 2: nopol $plates yang tidak punya P2H 30 hari -> status terakhir dari seluruh riwayat (p2h_lama, cache 24 jam).
+function p2h_status(array $plates = []): ?array {
     try {
         $sejak = date('Y-m-d 00:00:00', strtotime('-' . P2H_LOOKBACK_DAYS . ' days'));
         $out = [];
         foreach (fetch_rows('p2h_terakhir', ['sejak' => $sejak], P2H_DB) as $r) {
             $k = norm_plat($r['vehicle_license']);
             if (!isset($out[$k]) || $r['created_at'] > $out[$k]['waktu']) $out[$k] = ['status' => $r['status'], 'waktu' => $r['created_at']];
+        }
+        $sisa = array_values(array_diff(array_unique(array_filter(array_map('norm_plat', $plates))), array_keys($out)));
+        sort($sisa);
+        if ($sisa) {
+            $lama = cached('p2h_lama_' . md5(implode(',', $sisa)), function () use ($sisa) {
+                $o = [];
+                foreach (fetch_rows('p2h_lama', ['plates' => implode(',', $sisa)], P2H_DB) as $r)
+                    $o[norm_plat($r['vehicle_license'])] = ['status' => $r['status'], 'waktu' => $r['created_at']];
+                return $o;
+            }, 86400);
+            $out += $lama;
         }
         return $out;
     } catch (Throwable $e) {
@@ -294,16 +312,112 @@ function p2h_status(): ?array {
     }
 }
 
-// Master Unit: hanya unit di pool yang diizinkan role login (akses()['pool'], mis. POOL NAGRAK TRAILER).
-// mst_lookup_lines.attribute_v4 memakai garis bawah (POOL_NAGRAK_TRAILER), jadi dibandingkan setelah '_' -> ' '.
+// Shipment untuk dashboard (pengganti DOTS Report + GPS Tracking di tampilan HTML user), tender SHIPMENT_LOOKBACK_DAYS hari terakhir
+// sampai akhir $tanggal. Satu baris per shipment (array ringkas):
+//  [0 shipment, 1 driver 1, 2 driver 2, 3 tender 'Y-m-d H:i', 4 execution 'Y-m-d', 5 customer, 6 no order, 7 rute, 8 tipe truk,
+//   9 tipe shipment (SPK/SPO), 10 status GPS (CLOSED/FORCECLOSED/ONPROGRESS/READY/CANCEL), 11 jam status 'Y-m-d H:i' (ATA/ATD terbaru),
+//   12 nopol, 13 status proses (trx_shipment_preparation.status), 14 pool, 15 cancel (1/0)]
+function build_shipments(string $tanggal): array {
+    $sampai = date('Y-m-d 00:00:00', strtotime("$tanggal +1 day"));
+    $sejak = date('Y-m-d 00:00:00', strtotime("$tanggal -" . SHIPMENT_LOOKBACK_DAYS . ' days'));
+    $pools = array_flip(array_map('strtoupper', akses()['pool']));
+    $drv = array_flip(array_column(fetch_rows('mst_driver', ['projects' => implode(',', akses()['project'])]), 'dm_number'));
+    $ship = [];
+    foreach (fetch_rows('shipments_gps', ['sejak' => $sejak, 'sampai' => $sampai]) as $r) {
+        $id = $r['shipment_number']; if (!$id) continue;
+        if (!isset($ship[$id]) && !isset($pools[strtoupper((string) $r['ownership_shipment'])])
+            && !isset($drv[(string) $r['primary_driver_num']]) && !isset($drv[(string) $r['secondary_driver_num']])) continue;
+        $x = $ship[$id] ?? ['d1' => $r['primary_driver_num'], 'd2' => $r['secondary_driver_num'], 'tender' => $r['tender_date'], 'cust' => $r['customer_name'],
+                            'truck' => $r['equipment_group'], 'status' => strtoupper((string) $r['shipment_status']), 'nopol' => $r['license_number'],
+                            'pool' => $r['ownership_shipment'], 'end' => null, 'closed' => $r['closed_date']];
+        foreach (['d1' => 'primary_driver_num', 'd2' => 'secondary_driver_num', 'nopol' => 'license_number', 'truck' => 'equipment_group'] as $k => $c) if (!$x[$k] && $r[$c]) $x[$k] = $r[$c];
+        foreach (['final_ata_pta', 'final_atd_ptd'] as $c) if ($r[$c] && $r[$c] <= date('Y-m-d H:i:s') && (!$x['end'] || $r[$c] > $x['end'])) $x['end'] = $r[$c];
+        $ship[$id] = $x;
+    }
+    $prep = [];
+    foreach (array_chunk(array_keys($ship), 500) as $ch) {
+        $st = connect()->prepare(sprintf(sql('shipment_prep'), implode(',', array_fill(0, count($ch), '?'))));
+        $st->execute($ch);
+        foreach ($st->fetchAll() as $r) $prep[$r['shipment_id']] = $r;
+    }
+    $out = [];
+    foreach ($ship as $id => $x) {
+        $p = $prep[$id] ?? [];
+        $tender = ($p['tender_date'] ?? null) ?: $x['tender'];
+        $route = trim(implode(' - ', array_filter([$p['loading'] ?? '', $p['unloading'] ?? ''])));
+        $cancel = !empty($p['cancel_date']) || stripos((string) ($p['status'] ?? ''), 'cancel') !== false || $x['status'] === 'CANCEL';
+        $end = $x['end'] ?: (in_array($x['status'], ['CLOSED', 'FORCECLOSED'], true) ? $x['closed'] : null);
+        $out[] = [$id, $x['d1'] ?: '', $x['d2'] ?: '', iso_min($tender), isset($p['date_execution']) && $p['date_execution'] ? substr($p['date_execution'], 0, 10) : null,
+                  ($p['customer_name'] ?? '') ?: (string) $x['cust'], (string) ($p['order_number'] ?? ''), $route, norm_tipe($x['truck']),
+                  strtoupper((string) ($p['shipment_type'] ?? '')), $x['status'], iso_min($end), (string) $x['nopol'], (string) ($p['status'] ?? ''),
+                  (string) $x['pool'], $cancel ? 1 : 0];
+    }
+    return ['tanggal' => $tanggal, 'sejak' => substr($sejak, 0, 10), 'rows' => $out];
+}
+
+// Status FMS BD per nopol (query breakdown dari user): per nopol diambil SO TERAKHIR (tanggal SO terbaru) yang tidak dihapus;
+// BD bila SO itu belum punya handover_time, selain itu Ready. Nopol tanpa SO dalam rentang = Ready (diputuskan di build_units).
+// norm_plat(nopol) -> ['status' => BD|Ready, 'so' => info SO]; null bila FMS tidak bisa dibaca.
+function fms_bd(): ?array {
+    try {
+        $rows = fetch_rows('fms_bd', ['mulai' => date('Y-m-d 00:00:00', strtotime('-' . FMS_BD_LOOKBACK_DAYS . ' days')),
+                                      'sampai' => date('Y-m-d 00:00:00', strtotime('+1 day'))], FMS_DB);
+    } catch (Throwable $e) {
+        error_log('QUEDRIVE FMS BD: ' . $e->getMessage());
+        return null;
+    }
+    $so = [];   // id SO -> ringkasan (beberapa baris per SO bila WO lebih dari satu)
+    foreach ($rows as $r) {
+        if ($r['delete_time'] !== null || !$r['license_number']) continue;   // SO yang dihapus diabaikan
+        $id = $r['id'];
+        $cur = $so[$id] ?? ['nopol' => norm_plat($r['license_number']), 'so_date' => $r['service_order_date'], 'tipe' => $r['service_type'],
+                            'received' => $r['received_date'], 'wo' => [], 'handover' => null, 'repair' => [], 'rootcause' => $r['rootcause_desc']];
+        if ($r['wo_number']) $cur['wo'][$r['wo_number']] = true;
+        if ($r['handover_time'] && (!$cur['handover'] || $r['handover_time'] > $cur['handover'])) $cur['handover'] = $r['handover_time'];
+        foreach (['activity_repair_name', 'repair_group'] as $k) if ($r[$k]) $cur['repair'][$r[$k]] = true;
+        $so[$id] = $cur;
+    }
+    $out = [];
+    foreach ($so as $x) {
+        $k = $x['nopol'];
+        if (isset($out[$k]) && $out[$k]['so']['so_date'] >= iso_min($x['so_date'])) continue;
+        $out[$k] = ['status' => $x['handover'] ? 'Ready' : 'BD',
+                    'so' => ['so_date' => iso_min($x['so_date']), 'tipe' => $x['tipe'], 'received' => iso_min($x['received']),
+                             'wo' => implode(', ', array_keys($x['wo'])), 'handover' => iso_min($x['handover']),
+                             'repair' => implode(', ', array_slice(array_keys($x['repair']), 0, 4)), 'rootcause' => $x['rootcause']]];
+    }
+    return $out;
+}
+
+// Master Unit: unit aktif FMS (fl_mst_fleet_otm) pada pool yang diizinkan role login (akses()['pool'], mis. POOL NAGRAK TRAILER).
+// Bila FMS tidak bisa dibaca: cadangan dari Quickapps mst_lookup_lines (MST_UNIT_TAHUN), Status FMS BD = null ("?").
+// Sub Status dari Quickapps MST_UNIT_TAHUN.attribute_v2 (mis. MONTHLY_RENT), kosong bila tidak diisi.
 function build_units(): array {
-    $p2h = p2h_status() ?? [];
     $pools = array_map('strtoupper', akses()['pool']);
-    $rows = array_filter(fetch_rows('units'), fn($r) => in_array(strtoupper(str_replace('_', ' ', (string)$r['pool'])), $pools, true));
-    return array_values(array_map(function ($r) use ($p2h) {
-        $p = $p2h[norm_plat($r['nopol'])] ?? null;
-        return ['nopol' => $r['nopol'], 'tipe_unit' => norm_tipe($r['tipe_unit']), 'pool' => $r['pool'], 'customer' => $r['customer'],
-                'p2h' => $p['status'] ?? null, 'p2h_at' => iso_min($p['waktu'] ?? null)];
+    $sumber = 'FMS';
+    try {
+        $rows = fetch_rows('units_fms', ['pools' => implode(',', akses()['pool'])], FMS_DB);
+        $bd = fms_bd();
+        // Sub Status (mis. MONTHLY_RENT) tetap dari Quickapps MST_UNIT_TAHUN (attribute_v2), dicocokkan per nopol
+        $sub = [];
+        foreach (fetch_rows('units') as $q) if (($q['customer'] ?? '') !== '') $sub[norm_plat($q['nopol'])] = $q['customer'];
+        foreach ($rows as &$r) $r['customer'] = $sub[norm_plat($r['nopol'])] ?? null;
+        unset($r);
+    } catch (Throwable $e) {
+        error_log('QUEDRIVE FMS units: ' . $e->getMessage());
+        $sumber = 'Quickapps';
+        $bd = null;
+        $rows = array_filter(fetch_rows('units'), fn($r) => in_array(strtoupper(str_replace('_', ' ', (string)$r['pool'])), $pools, true));
+    }
+    $p2h = p2h_status(array_column($rows, 'nopol')) ?? [];
+    return array_values(array_map(function ($r) use ($p2h, $bd, $sumber) {
+        $k = norm_plat($r['nopol']);
+        $p = $p2h[$k] ?? null;
+        $b = $bd === null ? null : ($bd[$k] ?? ['status' => 'Ready', 'so' => null]);
+        return ['nopol' => $r['nopol'], 'tipe_unit' => norm_tipe($r['tipe_unit']), 'pool' => str_replace('_', ' ', (string) $r['pool']),
+                'sub_status' => ($r['customer'] ?? '') !== '' ? $r['customer'] : null, 'status_fms' => $r['status_fms'] ?? null, 'sumber' => $sumber,
+                'p2h' => $p['status'] ?? null, 'p2h_at' => iso_min($p['waktu'] ?? null),
+                'fms_bd' => $b['status'] ?? null, 'fms_bd_so' => $b['so'] ?? null];
     }, $rows));
 }
 
@@ -315,7 +429,8 @@ function build_units(): array {
 function build_spk_spo(string $tanggal): array {
     $sejak = date('Y-m-d 00:00:00', strtotime("$tanggal -" . SHIP_LOOKBACK_DAYS . ' days'));
     $ship = [];
-    foreach (fetch_rows('spk_spo', ['pools' => implode(',', akses()['pool']), 'sejak' => $sejak, 'sejak2' => "$tanggal 00:00:00"]) as $r) {
+    foreach (fetch_rows('spk_spo', ['pools' => implode(',', akses()['pool']), 'sejak' => $sejak, 'sejak2' => "$tanggal 00:00:00",
+                                 'batas' => date('Y-m-d 00:00:00', strtotime("$tanggal -31 days"))]) as $r) {
         $tipe = strtoupper(trim($r['shipment_type'] ?? ''));
         // seperti aturan DOTS: shipment tanpa tanggal tender dan yang dibatalkan tidak dihitung
         if (!in_array($tipe, ['SPK', 'SPO'], true) || !$r['tender_date'] || $r['cancel_date'] || stripos($r['status'] ?? '', 'cancel shipment approved') !== false) continue;

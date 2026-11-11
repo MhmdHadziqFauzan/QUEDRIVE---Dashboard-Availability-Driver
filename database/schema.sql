@@ -29,6 +29,16 @@ CREATE TABLE IF NOT EXISTS qd_antrian (
   KEY idx_diubah (diubah_pada)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Kolom tambahan List Antrian (tampilan HTML user 9-Nov): seluruh isi baris disimpan juga sebagai JSON (data) agar field baru
+-- dari tampilan tidak hilang; kolom lain untuk laporan. Satu driver bisa punya beberapa baris (putaran antri ke-1, ke-2, ...).
+ALTER TABLE qd_antrian
+  ADD COLUMN IF NOT EXISTS data           LONGTEXT     NULL,                 -- isi baris lengkap (JSON) seperti di dashboard
+  ADD COLUMN IF NOT EXISTS putaran        INT          NOT NULL DEFAULT 1,   -- antri ke-1, ke-2, ...
+  ADD COLUMN IF NOT EXISTS selesai        TINYINT(1)   NOT NULL DEFAULT 0,   -- 1 = putaran sudah diganti putaran berikutnya (antri lagi)
+  ADD COLUMN IF NOT EXISTS manual_sudah   TINYINT(1)   NOT NULL DEFAULT 0,   -- 1 = Status Order ditandai SUDAH manual
+  ADD COLUMN IF NOT EXISTS manual_remarks VARCHAR(300) NULL,                 -- remarks tanda SUDAH manual (boleh kosong)
+  ADD COLUMN IF NOT EXISTS jam_diedit     TINYINT(1)   NOT NULL DEFAULT 0;   -- 1 = jam antri diubah manual (lupa klik +)
+
 -- Setting & informasi dashboard (menu Upload & Setting: cut-off, pool SJ, batas aging, logo, info file upload, dll.)
 CREATE TABLE IF NOT EXISTS qd_setting (
   kunci       VARCHAR(64)  NOT NULL PRIMARY KEY,    -- 'config'
@@ -55,6 +65,20 @@ CREATE TABLE IF NOT EXISTS qd_upload (
   dihapus     TINYINT(1)   NOT NULL DEFAULT 0,
   diubah_pada DATETIME(6)  NOT NULL,
   PRIMARY KEY (jenis, bagian),
+  KEY idx_diubah (diubah_pada)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Catatan per driver (Master Driver) dan per unit (Master Unit). Berlaku mulai tanggal diisi sampai diubah;
+-- tanggal sebelumnya tetap memakai catatan lama. Isi kosong = catatan dihapus mulai tanggal itu.
+-- Disimpan terpisah dari master (master dibaca dari database sumber), jadi tidak hilang saat master berubah.
+CREATE TABLE IF NOT EXISTS qd_catatan (
+  jenis         VARCHAR(10)   NOT NULL,             -- DRIVER / UNIT
+  kunci         VARCHAR(40)   NOT NULL,             -- ID driver (mis. DM-01234) / nopol tanpa spasi-strip-titik (mis. B1234ABC)
+  berlaku_mulai DATE          NOT NULL,
+  catatan       VARCHAR(255)  NOT NULL DEFAULT '',  -- catatan unit maks 12 karakter (dicek di app/store.php)
+  diubah_pada   DATETIME(6)   NOT NULL,
+  diubah_oleh   VARCHAR(64)   NULL,
+  PRIMARY KEY (jenis, kunci, berlaku_mulai),
   KEY idx_diubah (diubah_pada)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

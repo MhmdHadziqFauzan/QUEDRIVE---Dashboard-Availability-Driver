@@ -36,3 +36,17 @@ php -S 127.0.0.1:8000 -t public server/router.php
 Lalu buka http://127.0.0.1:8000
 
 Pertama kali (atau setelah schema.sql berubah): `php database/buat_db.php`
+
+## Tampilan dari HTML user
+
+`app/views/dashboard.php` **dibuat otomatis** dari file HTML tampilan user (tidak diedit langsung):
+
+```
+php scripts/build_dashboard.php "simulasi/Update/<file HTML user>.html"
+```
+
+- Tampilan & aturan hitung = kode HTML user apa adanya; data bawaan HTML (daftar driver, nopol, snapshot) dibuang.
+- Sumber data & penyimpanan diganti oleh `public/assets/js/quedrive-adapter.js` (API PHP -> database), termasuk aturan
+  yang disepakati (akses role, Master Driver versi PHP, Master Unit FMS, Depo dropdown, catatan unit maks 12 karakter).
+- Bila user mengirim HTML baru: jalankan perintah di atas; bila ada patch yang gagal, sesuaikan patch di script build.
+- File HTML user berisi data pribadi: simpan di `simulasi/` (tidak ikut git).

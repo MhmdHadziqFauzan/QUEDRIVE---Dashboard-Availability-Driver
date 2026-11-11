@@ -1,6 +1,6 @@
 <?php
 /* API QUEDRIVE: /api/health, /api/drivers?tanggal=YYYY-MM-DD, /api/units,
-   /api/sj, /api/depo, /api/spk-spo?tanggal=YYYY-MM-DD, /api/dms/<view>?is_active=true|false&limit=N&offset=N (lihat DMS_VIEWS di lib.php),
+   /api/sj, /api/depo, /api/shipments?tanggal=YYYY-MM-DD, /api/spk-spo?tanggal=YYYY-MM-DD, /api/dms/<view>?is_active=true|false&limit=N&offset=N (lihat DMS_VIEWS di lib.php),
    /api/store (penyimpanan dashboard di database QUEDRIVE, lihat app/store.php)
    Nginx meneruskan semua /api/* ke file ini (lihat server/nginx-quedrive.conf). */
 require __DIR__ . '/../../app/lib.php';
@@ -77,6 +77,10 @@ try {
         case '/api/drivers':
             $t = date_param();
             reply(cached("drivers_" . login_user() . "_$t", fn() => build_drivers($t)));
+
+        case '/api/shipments':
+            $t = date_param();
+            reply(cached("shipments_" . login_user() . "_$t", fn() => build_shipments($t)));
 
         case '/api/units':
             reply(cached('units_' . login_user(), 'build_units'));
